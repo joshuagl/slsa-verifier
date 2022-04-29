@@ -48,6 +48,7 @@ const (
 var trustedReusableWorkflows = map[string]bool{
 	"slsa-framework/slsa-github-generator-go/.github/workflows/slsa3_builder.yml": true,
 	"slsa-framework/slsa-github-generator-go/.github/workflows/builder.yml":       true,
+	"joshuagl/slsa-github-generator-go/.github/workflows/slsa3_builder.yml":       true,
 }
 
 var (
@@ -66,6 +67,30 @@ func EnvelopeFromBytes(payload []byte) (env *dsselib.Envelope, err error) {
 	env = &dsselib.Envelope{}
 	err = json.Unmarshal(payload, env)
 	return
+}
+
+func PrintProvenance(env *dsselib.Envelope) error {
+	payload, err := base64.StdEncoding.DecodeString(env.Payload)
+	if err != nil {
+		return err
+	}
+
+	provenance := &intoto.ProvenanceStatement{}
+	if err := json.Unmarshal([]byte(payload), provenance); err != nil {
+		return err
+	}
+
+	// fmt.Printf("%s", provenance)
+
+	// bytes, err := json.MarshalIndent(provenance, "", "    ")
+	bytes, err := json.Marshal(provenance)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("%s", bytes)
+
+	return nil
 }
 
 // Get SHA256 Subject Digest from the provenance statement.

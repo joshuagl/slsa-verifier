@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 
+	"github.com/secure-systems-lab/go-securesystemslib/dsse"
 	"github.com/sigstore/cosign/cmd/cosign/cli/rekor"
 	"github.com/slsa-framework/slsa-verifier/pkg"
 )
@@ -22,12 +23,14 @@ var (
 	branch         string
 	tag            string
 	versiontag     string
+	printProv      bool
+	skipVerify     bool
 )
 
 var defaultRekorAddr = "https://rekor.sigstore.dev"
 
 func verify(ctx context.Context,
-	provenance []byte, artifactHash, source, branch string,
+	env *dsse.Envelope, artifactHash, source, branch string,
 	tag, versiontag *string,
 ) error {
 	rClient, err := rekor.NewClient(defaultRekorAddr)
@@ -37,11 +40,6 @@ func verify(ctx context.Context,
 
 	// Get Rekor entries corresponding to the binary artifact in the provenance.
 	uuids, err := pkg.GetRekorEntries(rClient, artifactHash)
-	if err != nil {
-		return err
-	}
-
-	env, err := pkg.EnvelopeFromBytes(provenance)
 	if err != nil {
 		return err
 	}
@@ -103,9 +101,14 @@ func main() {
 	flag.StringVar(&branch, "branch", "main", "expected branch the binary was compiled from")
 	flag.StringVar(&tag, "tag", "", "[optional] expected tag the binary was compiled from")
 	flag.StringVar(&versiontag, "versioned-tag", "", "[optional] expected version the binary was compiled from. Uses semantic version to match the tag")
+	flag.BoolVar(&printProv, "print-prov", false, "[optional] print the provenance predicate as unmarshalled JSON")
+	flag.BoolVar(&skipVerify, "skip-verify", false, "[optional] skip verification, must be used in conjunction with 'print-prov' option")
 	flag.Parse()
 
-	if provenancePath == "" || artifactPath == "" || source == "" {
+	if (skipVerify && !printProv) || // can only skip verification if printing provenance
+		// may supply only 'provenance' when skipping verify and printing provenance
+		(skipVerify && printProv && provenancePath == "") ||
+		(!skipVerify && (provenancePath == "" || artifactPath == "" || source == "")) {
 		flag.Usage()
 		os.Exit(1)
 	}
@@ -124,7 +127,26 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := runVerify(artifactPath, provenancePath, source, branch,
+	provenance, err := os.ReadFile(provenancePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to read provenance %s\n", provenancePath)
+		os.Exit(1)
+	}
+
+	envelope, err := pkg.EnvelopeFromBytes(provenance)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to decode provenance %s\n", provenancePath)
+		os.Exit(1)
+	}
+
+	if printProv {
+		pkg.PrintProvenance(envelope)
+		if skipVerify {
+			return
+		}
+	}
+
+	if err := runVerify(artifactPath, envelope, source, branch,
 		ptag, pversiontag); err != nil {
 		fmt.Fprintf(os.Stderr, "verification failed: %v\n", err)
 		os.Exit(2)
@@ -143,7 +165,7 @@ func isFlagPassed(name string) bool {
 	return found
 }
 
-func runVerify(artifactPath, provenancePath, source, branch string,
+func runVerify(artifactPath string, envelope *dsse.Envelope, source, branch string,
 	ptag, pversiontag *string,
 ) error {
 	f, err := os.Open(artifactPath)
@@ -152,18 +174,13 @@ func runVerify(artifactPath, provenancePath, source, branch string,
 	}
 	defer f.Close()
 
-	provenance, err := os.ReadFile(provenancePath)
-	if err != nil {
-		return err
-	}
-
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
 		log.Fatal(err)
 	}
 
 	ctx := context.Background()
-	return verify(ctx, provenance,
+	return verify(ctx, envelope,
 		hex.EncodeToString(h.Sum(nil)),
 		source, branch,
 		ptag, pversiontag)
